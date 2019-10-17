@@ -506,6 +506,15 @@ public abstract class PythonBaseModelProvider extends BaseWorkbenchContentProvid
             TreeNode<?> treeNode = (TreeNode<?>) element;
             return treeNode.hasChildren();
         }
+        if (element instanceof IFolder) {
+            return true;
+        }
+        if (element instanceof IFile) {
+            IFile fl = (IFile) element;
+            if (!fl.getName().endsWith(".py")) {
+                return false;
+            }
+        }
         return getChildren(element).length > 0;
     }
 

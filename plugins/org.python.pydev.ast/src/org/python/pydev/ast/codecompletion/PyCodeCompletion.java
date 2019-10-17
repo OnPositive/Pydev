@@ -810,6 +810,7 @@ public class PyCodeCompletion extends AbstractPyCodeCompletion {
     @SuppressWarnings({ "unchecked" })
     public static void getSelfOrClsCompletions(ILocalScope scope, ITokenCompletionRequest request, TokensList theList,
             ICompletionState state, boolean getOnlySupers) throws BadLocationException, MisconfigurationException {
+        
         for (Iterator<SimpleNode> it = scope.iterator(); it.hasNext();) {
             SimpleNode node = it.next();
             if (node instanceof ClassDef) {

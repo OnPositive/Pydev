@@ -45,7 +45,6 @@ import org.python.pydev.debug.model.remote.RemoteDebugger;
 import org.python.pydev.debug.processfactory.PyProcessFactory;
 import org.python.pydev.debug.pyunit.IPyUnitServer;
 import org.python.pydev.debug.pyunit.PyUnitServer;
-import org.python.pydev.debug.pyunit.PyUnitView;
 import org.python.pydev.shared_core.IMiscConstants;
 import org.python.pydev.shared_core.callbacks.CallbackWithListeners;
 import org.python.pydev.shared_core.process.ProcessUtils;
@@ -101,11 +100,6 @@ public class PythonRunner {
 
         try {
             PyUnitServer pyUnitServer = null;
-            if (config.isUnittest()) {
-                pyUnitServer = config.createPyUnitServer(config, launch);
-                onPyUnitServerCreated.call(pyUnitServer);
-                PyUnitView.registerPyUnitServer(pyUnitServer);
-            }
 
             if (config.isDebug) {
                 runDebug(config, launch, monitor);
@@ -283,6 +277,12 @@ public class PythonRunner {
             //on the java side (which would make things garbled anyways).
             arrayAsMapEnv.put("PYTHONIOENCODING", encoding);
         }
+        //arrayAsMapEnv.clear();
+
+        Map<String, String> getenv = System.getenv();
+        //HashSet<String> hashSet = new HashSet<>(getenv.keySet());
+        //hashSet.removeAll(arrayAsMapEnv.keySet());
+        arrayAsMapEnv.putAll(getenv);
         envp = ProcessUtils.getMapEnvAsArray(arrayAsMapEnv);
         Process p = DebugPlugin.exec(cmdLine, workingDirectory, envp);
         if (p == null) {
