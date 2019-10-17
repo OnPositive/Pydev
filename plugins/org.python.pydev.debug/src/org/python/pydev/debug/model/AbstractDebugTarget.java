@@ -459,6 +459,15 @@ public abstract class AbstractDebugTarget extends AbstractDebugTargetWithTransmi
             } else if (cmdCode == AbstractDebuggerCommand.CMD_PROCESS_CREATED) {
                 // We don't really need to handle process created for now.
 
+            } else if (cmdCode == AbstractDebuggerCommand.CMD_SET_NEXT_STATEMENT) {
+                // This is just an acknowledgement.
+
+            } else if (cmdCode == AbstractDebuggerCommand.CMD_RETURN) {
+                // This is just an acknowledgement.
+
+            } else if (cmdCode == AbstractDebuggerCommand.CMD_EXIT) {
+                // May be sent when about to exit.
+
             } else {
                 PydevDebugPlugin.log(IStatus.WARNING, "Unexpected debugger command:" + sCmdCode +
                         "\nseq:" + sSeqCode
@@ -923,7 +932,7 @@ public abstract class AbstractDebugTarget extends AbstractDebugTargetWithTransmi
                                 if (p.getType().equals(IOConsolePartition.INPUT_PARTITION_TYPE)) {
                                     if (event.fText.length() <= 2) {
                                         //the user typed something
-                                        final String inputFound = p.getString();
+                                        final String inputFound = event.getDocument().get(p.getOffset(), p.getLength());
                                         for (IConsoleInputListener listener : participants) {
                                             listener.newLineReceived(inputFound, target);
                                         }

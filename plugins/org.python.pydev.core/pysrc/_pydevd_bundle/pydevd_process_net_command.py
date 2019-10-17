@@ -4,16 +4,18 @@ import sys
 import traceback
 
 from _pydev_bundle import pydev_log
+from _pydev_bundle.pydev_log import exception as pydev_log_exception
 from _pydevd_bundle import pydevd_traceproperty, pydevd_dont_trace, pydevd_utils
 from _pydevd_bundle.pydevd_additional_thread_info import set_additional_thread_info
 from _pydevd_bundle.pydevd_breakpoints import get_exception_class
 from _pydevd_bundle.pydevd_comm import (pydevd_find_thread_by_id,
     InternalEvaluateConsoleExpression, InternalConsoleGetCompletions, InternalRunCustomOperation,
     internal_get_next_statement_targets)
-from _pydevd_bundle.pydevd_constants import IS_PY3K, NEXT_VALUE_SEPARATOR, IS_WINDOWS
-from _pydevd_bundle.pydevd_comm_constants import ID_TO_MEANING, CMD_EXEC_EXPRESSION
+from _pydevd_bundle.pydevd_constants import IS_PY3K, NEXT_VALUE_SEPARATOR, IS_WINDOWS, IS_PY2
+from _pydevd_bundle.pydevd_comm_constants import ID_TO_MEANING, CMD_EXEC_EXPRESSION, CMD_AUTHENTICATE
 from _pydevd_bundle.pydevd_api import PyDevdAPI
 from _pydev_bundle.pydev_imports import StringIO
+from _pydevd_bundle.pydevd_net_command import NetCommand
 
 
 class _PyDevCommandProcessor(object):
@@ -28,6 +30,14 @@ class _PyDevCommandProcessor(object):
         @param seq: the sequence of the command
         @param text: the text received in the command
         '''
+
+        # We can only proceed if the client is already authenticated or if it's the
+        # command to authenticate.
+        if cmd_id != CMD_AUTHENTICATE and not py_db.authentication.is_authenticated():
+            cmd = py_db.cmd_factory.make_error_message(seq, 'Client not authenticated.')
+            py_db.writer.add_command(cmd)
+            return
+
         meaning = ID_TO_MEANING[str(cmd_id)]
 
         # print('Handling %s (%s)' % (meaning, text))
@@ -41,28 +51,33 @@ class _PyDevCommandProcessor(object):
             py_db.writer.add_command(cmd)
             return
 
-        py_db._main_lock.acquire()
-        try:
-            cmd = on_command(py_db, cmd_id, seq, text)
-            if cmd is not None:
-                py_db.writer.add_command(cmd)
-        except:
-            if traceback is not None and sys is not None:
-                traceback.print_exc()
-
-                stream = StringIO()
-                traceback.print_exc(file=stream)
-                cmd = py_db.cmd_factory.make_error_message(
-                    seq,
-                    "Unexpected exception in process_net_command.\nInitial params: %s. Exception: %s" % (
-                        ((cmd_id, seq, text), stream.getvalue())
-                    )
-                )
+        with py_db._main_lock:
+            try:
+                cmd = on_command(py_db, cmd_id, seq, text)
                 if cmd is not None:
                     py_db.writer.add_command(cmd)
+            except:
+                if traceback is not None and sys is not None and pydev_log_exception is not None:
+                    pydev_log_exception()
 
-        finally:
-            py_db._main_lock.release()
+                    stream = StringIO()
+                    traceback.print_exc(file=stream)
+                    cmd = py_db.cmd_factory.make_error_message(
+                        seq,
+                        "Unexpected exception in process_net_command.\nInitial params: %s. Exception: %s" % (
+                            ((cmd_id, seq, text), stream.getvalue())
+                        )
+                    )
+                    if cmd is not None:
+                        py_db.writer.add_command(cmd)
+
+    def cmd_authenticate(self, py_db, cmd_id, seq, text):
+        access_token = text
+        py_db.authentication.login(access_token)
+        if py_db.authentication.is_authenticated():
+            return NetCommand(cmd_id, seq, py_db.authentication.ide_access_token)
+
+        return py_db.cmd_factory.make_error_message(seq, 'Client not authenticated.')
 
     def cmd_run(self, py_db, cmd_id, seq, text):
         return self.api.run(py_db)
@@ -96,6 +111,9 @@ class _PyDevCommandProcessor(object):
         return self.api.request_suspend_thread(py_db, text.strip())
 
     def cmd_version(self, py_db, cmd_id, seq, text):
+        if IS_PY2 and isinstance(text, unicode):
+            text = text.encode('utf-8')
+
         # Default based on server process (although ideally the IDE should
         # provide it).
         if IS_WINDOWS:
@@ -116,7 +134,12 @@ class _PyDevCommandProcessor(object):
         elif len(splitted) == 3:
             _local_version, ide_os, breakpoints_by = splitted
 
-        return self.api.set_ide_os_and_breakpoints_by(py_db, seq, ide_os, breakpoints_by)
+        version_msg = self.api.set_ide_os_and_breakpoints_by(py_db, seq, ide_os, breakpoints_by)
+
+        # Enable thread notifications after the version command is completed.
+        self.api.set_enable_thread_notifications(py_db, True)
+
+        return version_msg
 
     def cmd_thread_run(self, py_db, cmd_id, seq, text):
         return self.api.request_resume_thread(text.strip())
@@ -133,7 +156,7 @@ class _PyDevCommandProcessor(object):
 
     def _cmd_set_next(self, py_db, cmd_id, seq, text):
         thread_id, line, func_name = text.split('\t', 2)
-        return self.api.request_set_next(py_db, thread_id, cmd_id, line, func_name)
+        return self.api.request_set_next(py_db, seq, thread_id, cmd_id, line, func_name)
 
     cmd_run_to_line = _cmd_set_next
     cmd_set_next_statement = _cmd_set_next
@@ -201,70 +224,80 @@ class _PyDevCommandProcessor(object):
         # func name: 'None': match anything. Empty: match global, specified: only method context.
         # command to add some breakpoint.
         # text is filename\tline. Add to breakpoints dictionary
-        suspend_policy = "NONE"  # Can be 'NONE' or 'ALL'
+        suspend_policy = u"NONE"  # Can be 'NONE' or 'ALL'
         is_logpoint = False
         hit_condition = None
         if py_db._set_breakpoints_with_id:
             try:
                 try:
-                    breakpoint_id, btype, filename, line, func_name, condition, expression, hit_condition, is_logpoint, suspend_policy = text.split('\t', 9)
+                    breakpoint_id, btype, filename, line, func_name, condition, expression, hit_condition, is_logpoint, suspend_policy = text.split(u'\t', 9)
                 except ValueError:  # not enough values to unpack
                     # No suspend_policy passed (use default).
-                    breakpoint_id, btype, filename, line, func_name, condition, expression, hit_condition, is_logpoint = text.split('\t', 8)
-                is_logpoint = is_logpoint == 'True'
+                    breakpoint_id, btype, filename, line, func_name, condition, expression, hit_condition, is_logpoint = text.split(u'\t', 8)
+                is_logpoint = is_logpoint == u'True'
             except ValueError:  # not enough values to unpack
-                breakpoint_id, btype, filename, line, func_name, condition, expression = text.split('\t', 6)
+                breakpoint_id, btype, filename, line, func_name, condition, expression = text.split(u'\t', 6)
 
             breakpoint_id = int(breakpoint_id)
             line = int(line)
 
             # We must restore new lines and tabs as done in
             # AbstractDebugTarget.breakpointAdded
-            condition = condition.replace("@_@NEW_LINE_CHAR@_@", '\n').\
-                replace("@_@TAB_CHAR@_@", '\t').strip()
+            condition = condition.replace(u"@_@NEW_LINE_CHAR@_@", u'\n').\
+                replace(u"@_@TAB_CHAR@_@", u'\t').strip()
 
-            expression = expression.replace("@_@NEW_LINE_CHAR@_@", '\n').\
-                replace("@_@TAB_CHAR@_@", '\t').strip()
+            expression = expression.replace(u"@_@NEW_LINE_CHAR@_@", u'\n').\
+                replace(u"@_@TAB_CHAR@_@", u'\t').strip()
         else:
             # Note: this else should be removed after PyCharm migrates to setting
             # breakpoints by id (and ideally also provides func_name).
-            btype, filename, line, func_name, suspend_policy, condition, expression = text.split('\t', 6)
+            btype, filename, line, func_name, suspend_policy, condition, expression = text.split(u'\t', 6)
             # If we don't have an id given for each breakpoint, consider
             # the id to be the line.
             breakpoint_id = line = int(line)
 
-            condition = condition.replace("@_@NEW_LINE_CHAR@_@", '\n'). \
-                replace("@_@TAB_CHAR@_@", '\t').strip()
+            condition = condition.replace(u"@_@NEW_LINE_CHAR@_@", u'\n'). \
+                replace(u"@_@TAB_CHAR@_@", u'\t').strip()
 
-            expression = expression.replace("@_@NEW_LINE_CHAR@_@", '\n'). \
-                replace("@_@TAB_CHAR@_@", '\t').strip()
+            expression = expression.replace(u"@_@NEW_LINE_CHAR@_@", u'\n'). \
+                replace(u"@_@TAB_CHAR@_@", u'\t').strip()
 
-        if condition is not None and (len(condition) <= 0 or condition == "None"):
+        if condition is not None and (len(condition) <= 0 or condition == u"None"):
             condition = None
 
-        if expression is not None and (len(expression) <= 0 or expression == "None"):
+        if expression is not None and (len(expression) <= 0 or expression == u"None"):
             expression = None
 
-        if hit_condition is not None and (len(hit_condition) <= 0 or hit_condition == "None"):
+        if hit_condition is not None and (len(hit_condition) <= 0 or hit_condition == u"None"):
             hit_condition = None
 
-        filename = self.api.filename_to_server(filename)
-        func_name = self.api.to_str(func_name)
+        result = self.api.add_breakpoint(
+            py_db, self.api.filename_to_str(filename), btype, breakpoint_id, line, condition, func_name, expression, suspend_policy, hit_condition, is_logpoint)
+        error_code = result.error_code
 
-        self.api.add_breakpoint(
-            py_db, filename, btype, breakpoint_id, line, condition, func_name, expression, suspend_policy, hit_condition, is_logpoint)
+        if error_code:
+            translated_filename = result.translated_filename
+            if error_code == self.api.ADD_BREAKPOINT_FILE_NOT_FOUND:
+                pydev_log.critical('pydev debugger: warning: Trying to add breakpoint to file that does not exist: %s (will have no effect).' % (translated_filename,))
+
+            elif error_code == self.api.ADD_BREAKPOINT_FILE_EXCLUDED_BY_FILTERS:
+                pydev_log.critical('pydev debugger: warning: Trying to add breakpoint to file that is excluded by filters: %s (will have no effect).' % (translated_filename,))
+
+            else:
+                # Shouldn't get here.
+                pydev_log.critical('pydev debugger: warning: Breakpoint not validated (reason unknown -- please report as error): %s.' % (translated_filename,))
 
     def cmd_remove_break(self, py_db, cmd_id, seq, text):
         # command to remove some breakpoint
         # text is type\file\tid. Remove from breakpoints dictionary
         breakpoint_type, filename, breakpoint_id = text.split('\t', 2)
 
-        filename = self.api.filename_to_server(filename)
+        filename = self.api.filename_to_str(filename)
 
         try:
             breakpoint_id = int(breakpoint_id)
         except ValueError:
-            pydev_log.error('Error removing breakpoint. Expected breakpoint_id to be an int. Found: %s' % (breakpoint_id,))
+            pydev_log.critical('Error removing breakpoint. Expected breakpoint_id to be an int. Found: %s', breakpoint_id)
 
         else:
             self.api.remove_breakpoint(py_db, filename, breakpoint_type, breakpoint_id)
@@ -360,7 +393,7 @@ class _PyDevCommandProcessor(object):
 
     def _load_source(self, py_db, cmd_id, seq, text):
         filename = text
-        filename = self.api.filename_to_server(filename)
+        filename = self.api.filename_to_str(filename)
         self.api.request_load_source(py_db, seq, filename)
 
     cmd_load_source = _load_source
@@ -563,7 +596,8 @@ class _PyDevCommandProcessor(object):
         pydevd_utils.dump_threads()
 
     def cmd_stop_on_start(self, py_db, cmd_id, seq, text):
-        py_db.stop_on_start = text.strip() in ('True', 'true', '1')
+        if text.strip() in ('True', 'true', '1'):
+            self.api.stop_on_entry()
 
     def cmd_pydevd_json_config(self, py_db, cmd_id, seq, text):
         # Expected to receive a json string as:
@@ -592,7 +626,7 @@ class _PyDevCommandProcessor(object):
             additional_info = set_additional_thread_info(t)
             frame = additional_info.get_topmost_frame(t)
         try:
-            return py_db.cmd_factory.make_get_exception_details_message(seq, thread_id, frame)
+            return py_db.cmd_factory.make_get_exception_details_message(py_db, seq, thread_id, frame)
         finally:
             frame = None
             t = None

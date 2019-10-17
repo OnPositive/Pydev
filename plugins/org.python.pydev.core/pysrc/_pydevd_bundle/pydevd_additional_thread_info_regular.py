@@ -1,5 +1,6 @@
 import sys
-from _pydevd_bundle.pydevd_constants import STATE_RUN, PYTHON_SUSPEND, IS_JYTHON, IS_IRONPYTHON
+from _pydevd_bundle.pydevd_constants import (STATE_RUN, PYTHON_SUSPEND, IS_JYTHON,
+    USE_CUSTOM_SYS_CURRENT_FRAMES, USE_CUSTOM_SYS_CURRENT_FRAMES_MAP, ForkSafeLock)
 from _pydev_bundle import pydev_log
 # IFDEF CYTHON
 # pydev_log.debug("Using Cython speedups")
@@ -9,7 +10,7 @@ from _pydevd_bundle.pydevd_frame import PyDBFrame
 
 version = 11
 
-if not hasattr(sys, '_current_frames'):
+if USE_CUSTOM_SYS_CURRENT_FRAMES:
 
     # Some versions of Jython don't have it (but we can provide a replacement)
     if IS_JYTHON:
@@ -40,7 +41,7 @@ if not hasattr(sys, '_current_frames'):
                 ret[thread.getId()] = frame
             return ret
 
-    elif IS_IRONPYTHON:
+    elif USE_CUSTOM_SYS_CURRENT_FRAMES_MAP:
         _tid_to_last_frame = {}
 
         # IronPython doesn't have it. Let's use our workaround...
@@ -68,6 +69,7 @@ class PyDBAdditionalThreadInfo(object):
     __slots__ = [
         'pydev_state',
         'pydev_step_stop',
+        'pydev_original_step_cmd',
         'pydev_step_cmd',
         'pydev_notify_kill',
         'pydev_smart_step_stop',
@@ -91,7 +93,16 @@ class PyDBAdditionalThreadInfo(object):
     def __init__(self):
         self.pydev_state = STATE_RUN  # STATE_RUN or STATE_SUSPEND
         self.pydev_step_stop = None
+
+        # Note: we have `pydev_original_step_cmd` and `pydev_step_cmd` because the original is to
+        # say the action that started it and the other is to say what's the current tracing behavior
+        # (because it's possible that we start with a step over but may have to switch to a
+        # different step strategy -- for instance, if a step over is done and we return the current
+        # method the strategy is changed to a step in).
+
+        self.pydev_original_step_cmd = -1  # Something as CMD_STEP_INTO, CMD_STEP_OVER, etc.
         self.pydev_step_cmd = -1  # Something as CMD_STEP_INTO, CMD_STEP_OVER, etc.
+
         self.pydev_notify_kill = False
         self.pydev_smart_step_stop = None
         self.pydev_django_resolve_frame = False
@@ -124,8 +135,7 @@ class PyDBAdditionalThreadInfo(object):
             self.pydev_state, self.pydev_step_stop, self.pydev_step_cmd, self.pydev_notify_kill)
 
 
-from _pydev_imps._pydev_saved_modules import threading
-_set_additional_thread_info_lock = threading.Lock()
+_set_additional_thread_info_lock = ForkSafeLock()
 
 
 def set_additional_thread_info(thread):

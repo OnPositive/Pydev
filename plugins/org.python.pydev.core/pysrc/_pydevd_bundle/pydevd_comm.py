@@ -64,15 +64,15 @@ each command has a format:
 '''
 
 import itertools
+import linecache
 import os
 
 from _pydev_bundle.pydev_imports import _queue
 from _pydev_imps._pydev_saved_modules import time
-from _pydev_imps._pydev_saved_modules import thread
 from _pydev_imps._pydev_saved_modules import threading
-from socket import AF_INET, SOCK_STREAM, SHUT_RD, SHUT_WR, SOL_SOCKET, SO_REUSEADDR, SHUT_RDWR
-from _pydevd_bundle.pydevd_constants import (DebugInfoHolder, get_thread_id, IS_JYTHON, IS_PY2,
-    IS_PY36_OR_GREATER, STATE_RUN, dict_keys, ASYNC_EVAL_TIMEOUT_SEC, GlobalDebuggerHolder,
+from socket import AF_INET, SOCK_STREAM, SHUT_WR, SOL_SOCKET, SO_REUSEADDR, IPPROTO_TCP
+from _pydevd_bundle.pydevd_constants import (DebugInfoHolder, get_thread_id, IS_WINDOWS, IS_JYTHON,
+    IS_PY2, IS_PY36_OR_GREATER, STATE_RUN, dict_keys, ASYNC_EVAL_TIMEOUT_SEC,
     get_global_debugger, GetGlobalDebugger, set_global_debugger)  # Keep for backward compatibility @UnusedImport
 from _pydev_bundle.pydev_override import overrides
 import weakref
@@ -82,13 +82,14 @@ from _pydevd_bundle._debug_adapter.pydevd_schema import VariablesResponseBody, \
 from _pydevd_bundle._debug_adapter import pydevd_base_schema, pydevd_schema
 from _pydevd_bundle.pydevd_net_command import NetCommand
 from _pydevd_bundle.pydevd_xml import ExceptionOnEvaluate
+from _pydevd_bundle.pydevd_constants import ForkSafeLock
 try:
     from urllib import quote_plus, unquote_plus
 except:
     from urllib.parse import quote_plus, unquote_plus  # @Reimport @UnresolvedImport
 
 import pydevconsole
-from _pydevd_bundle import pydevd_vars
+from _pydevd_bundle import pydevd_vars, pydevd_utils
 import pydevd_tracing
 from _pydevd_bundle import pydevd_xml
 from _pydevd_bundle import pydevd_vm_type
@@ -96,6 +97,7 @@ import sys
 import traceback
 from _pydevd_bundle.pydevd_utils import quote_smart as quote, compare_object_attrs_key
 from _pydev_bundle import pydev_log
+from _pydev_bundle.pydev_log import exception as pydev_log_exception
 from _pydev_bundle import _pydev_completer
 
 from pydevd_tracing import get_exception_traceback_str
@@ -113,40 +115,33 @@ except:
 # CMD_XXX constants imported for backward compatibility
 from _pydevd_bundle.pydevd_comm_constants import *  # @UnusedWildImport
 
+if IS_WINDOWS and not IS_JYTHON:
+    from socket import SO_EXCLUSIVEADDRUSE
+
 if IS_JYTHON:
     import org.python.core as JyCore  # @UnresolvedImport
 
 
-def pydevd_log(level, *args):
-    ''' levels are:
-        0 most serious warnings/errors
-        1 warnings/significant events
-        2 informational trace
-    '''
-    if level <= DebugInfoHolder.DEBUG_TRACE_LEVEL:
-        # yes, we can have errors printing if the console of the program has been finished (and we're still trying to print something)
-        try:
-            sys.stderr.write('%s\n' % (args,))
-        except:
-            pass
-
-
 class PyDBDaemonThread(threading.Thread):
-    created_pydb_daemon_threads = {}
 
-    def __init__(self, target_and_args=None):
+    def __init__(self, py_db, target_and_args=None):
         '''
         :param target_and_args:
             tuple(func, args, kwargs) if this should be a function and args to run.
             -- Note: use through run_as_pydevd_daemon_thread().
         '''
         threading.Thread.__init__(self)
-        self.killReceived = False
+        self._py_db = weakref.ref(py_db)
+        self._kill_received = False
         mark_as_pydevd_daemon_thread(self)
         self._target_and_args = target_and_args
 
+    @property
+    def py_db(self):
+        return self._py_db()
+
     def run(self):
-        created_pydb_daemon = self.created_pydb_daemon_threads
+        created_pydb_daemon = self.py_db.created_pydb_daemon_threads
         created_pydb_daemon[self] = 1
         try:
             try:
@@ -160,8 +155,8 @@ class PyDBDaemonThread(threading.Thread):
                 self._stop_trace()
                 self._on_run()
             except:
-                if sys is not None and traceback is not None:
-                    traceback.print_exc()
+                if sys is not None and pydev_log_exception is not None:
+                    pydev_log_exception()
         finally:
             del created_pydb_daemon[self]
 
@@ -173,7 +168,9 @@ class PyDBDaemonThread(threading.Thread):
             raise NotImplementedError('Should be reimplemented by: %s' % self.__class__)
 
     def do_kill_pydev_thread(self):
-        self.killReceived = True
+        if not self._kill_received:
+            pydev_log.debug('%s received kill signal', self.getName())
+            self._kill_received = True
 
     def _stop_trace(self):
         if self.pydev_do_not_trace:
@@ -186,11 +183,11 @@ def mark_as_pydevd_daemon_thread(thread):
     thread.daemon = True
 
 
-def run_as_pydevd_daemon_thread(func, *args, **kwargs):
+def run_as_pydevd_daemon_thread(py_db, func, *args, **kwargs):
     '''
     Runs a function as a pydevd daemon thread (without any tracing in place).
     '''
-    t = PyDBDaemonThread(target_and_args=(func, args, kwargs))
+    t = PyDBDaemonThread(py_db, target_and_args=(func, args, kwargs))
     t.name = '%s (pydevd daemon thread)' % (func.__name__,)
     t.start()
     return t
@@ -199,26 +196,45 @@ def run_as_pydevd_daemon_thread(func, *args, **kwargs):
 class ReaderThread(PyDBDaemonThread):
     ''' reader thread reads and dispatches commands in an infinite loop '''
 
-    def __init__(self, sock):
-        from _pydevd_bundle.pydevd_process_net_command_json import process_net_command_json
-        from _pydevd_bundle.pydevd_process_net_command import process_net_command
-        PyDBDaemonThread.__init__(self)
+    def __init__(self, sock, py_db, PyDevJsonCommandProcessor, process_net_command, terminate_on_socket_close=True):
+        assert sock is not None
+        PyDBDaemonThread.__init__(self, py_db)
+        self.__terminate_on_socket_close = terminate_on_socket_close
 
         self.sock = sock
         self._buffer = b''
         self.setName("pydevd.Reader")
         self.process_net_command = process_net_command
-        self.process_net_command_json = process_net_command_json
-        self.global_debugger_holder = GlobalDebuggerHolder
+        self.process_net_command_json = PyDevJsonCommandProcessor(self._from_json).process_net_command_json
 
+    def _from_json(self, json_msg, update_ids_from_dap=False):
+        return pydevd_base_schema.from_json(json_msg, update_ids_from_dap, on_dict_loaded=self._on_dict_loaded)
+
+    def _on_dict_loaded(self, dct):
+        for listener in self.py_db.dap_messages_listeners:
+            listener.after_receive(dct)
+
+    @overrides(PyDBDaemonThread.do_kill_pydev_thread)
     def do_kill_pydev_thread(self):
-        # We must close the socket so that it doesn't stay halted there.
-        self.killReceived = True
-        try:
-            self.sock.shutdown(SHUT_RD)  # shutdown the socket for read
-        except:
-            # just ignore that
-            pass
+        PyDBDaemonThread.do_kill_pydev_thread(self)
+        # Note that we no longer shutdown the reader, just the writer. The idea is that we shutdown
+        # the writer to send that the communication has finished, then, the client will shutdown its
+        # own writer when it receives an empty read, at which point this reader will also shutdown.
+
+        # That way, we can *almost* guarantee that all messages have been properly sent -- it's not
+        # completely guaranteed because it's possible that the process exits before the whole
+        # message was sent as having this thread alive won't stop the process from exiting -- we
+        # have a timeout when exiting the process waiting for this thread to finish -- see:
+        # PyDB.dispose_and_kill_all_pydevd_threads()).
+
+        # try:
+        #    self.sock.shutdown(SHUT_RD)
+        # except:
+        #    pass
+        # try:
+        #    self.sock.close()
+        # except:
+        #    pass
 
     def _read(self, size):
         while True:
@@ -233,7 +249,10 @@ class ReaderThread(PyDBDaemonThread):
                 self._buffer = self._buffer[size:]
                 return ret
 
-            r = self.sock.recv(max(size - buffer_len, 1024))
+            try:
+                r = self.sock.recv(max(size - buffer_len, 1024))
+            except OSError:
+                return b''
             if not r:
                 return b''
             self._buffer += r
@@ -247,7 +266,10 @@ class ReaderThread(PyDBDaemonThread):
                 self._buffer = self._buffer[i:]
                 return ret
             else:
-                r = self.sock.recv(1024)
+                try:
+                    r = self.sock.recv(1024)
+                except OSError:
+                    return b''
                 if not r:
                     return b''
                 self._buffer += r
@@ -257,12 +279,18 @@ class ReaderThread(PyDBDaemonThread):
         try:
             content_len = -1
 
-            while not self.killReceived:
+            while True:
+                # i.e.: even if we received a kill, we should only exit the ReaderThread when the
+                # client itself closes the connection (although on kill received we stop actually
+                # processing anything read).
                 try:
                     line = self._read_line()
+                    if self._kill_received:
+                        continue
 
                     if len(line) == 0:
-                        self.handle_except()
+                        pydev_log.debug('ReaderThread: empty contents received (len(line) == 0).')
+                        self._terminate_on_socket_close()
                         return  # Finished communication.
 
                     if line.startswith(b'Content-Length:'):
@@ -273,14 +301,18 @@ class ReaderThread(PyDBDaemonThread):
                         # If we previously received a content length, read until a '\r\n'.
                         if line == b'\r\n':
                             json_contents = self._read(content_len)
+                            if self._kill_received:
+                                continue
+
                             content_len = -1
 
                             if len(json_contents) == 0:
-                                self.handle_except()
+                                pydev_log.debug('ReaderThread: empty contents received (len(json_contents) == 0).')
+                                self._terminate_on_socket_close()
                                 return  # Finished communication.
 
                             # We just received a json message, let's process it.
-                            self.process_net_command_json(self.global_debugger_holder.global_dbg, json_contents)
+                            self.process_net_command_json(self.py_db, json_contents)
 
                         continue
                     else:
@@ -294,9 +326,9 @@ class ReaderThread(PyDBDaemonThread):
                         elif line.endswith(b'\r'):
                             line = line[:-1]
                 except:
-                    if not self.killReceived:
-                        traceback.print_exc()
-                        self.handle_except()
+                    if not self._kill_received:
+                        pydev_log_exception()
+                        self._terminate_on_socket_close()
                     return  # Finished communication.
 
                 # Note: the java backend is always expected to pass utf-8 encoded strings. We now work with unicode
@@ -306,8 +338,7 @@ class ReaderThread(PyDBDaemonThread):
                     line = line.decode('utf-8')
 
                 if DebugInfoHolder.DEBUG_RECORD_SOCKET_READS:
-                    sys.stderr.write(u'debugger: received >>%s<<\n' % (line,))
-                    sys.stderr.flush()
+                    pydev_log.critical(u'debugger: received >>%s<<\n' % (line,))
 
                 args = line.split(u'\t', 2)
                 try:
@@ -315,32 +346,35 @@ class ReaderThread(PyDBDaemonThread):
                     pydev_log.debug('Received command: %s %s\n' % (ID_TO_MEANING.get(str(cmd_id), '???'), line,))
                     self.process_command(cmd_id, int(args[1]), args[2])
                 except:
-                    if traceback is not None and sys is not None:  # Could happen at interpreter shutdown
-                        traceback.print_exc()
-                        sys.stderr.write("Can't process net command: %s\n" % line)
-                        sys.stderr.flush()
+                    if sys is not None and pydev_log_exception is not None:  # Could happen at interpreter shutdown
+                        pydev_log_exception("Can't process net command: %s.", line)
 
         except:
-            if not self.killReceived:
-                if traceback is not None:  # Could happen at interpreter shutdown
-                    traceback.print_exc()
-            self.handle_except()
+            if not self._kill_received:
+                if sys is not None and pydev_log_exception is not None:  # Could happen at interpreter shutdown
+                    pydev_log_exception()
 
-    def handle_except(self):
-        self.global_debugger_holder.global_dbg.finish_debugging_session()
+            self._terminate_on_socket_close()
+        finally:
+            pydev_log.debug('ReaderThread: exit')
+
+    def _terminate_on_socket_close(self):
+        if self.__terminate_on_socket_close:
+            self.py_db.dispose_and_kill_all_pydevd_threads()
 
     def process_command(self, cmd_id, seq, text):
-        self.process_net_command(self.global_debugger_holder.global_dbg, cmd_id, seq, text)
+        self.process_net_command(self.py_db, cmd_id, seq, text)
 
 
 class WriterThread(PyDBDaemonThread):
     ''' writer thread writes out the commands in an infinite loop '''
 
-    def __init__(self, sock):
-        PyDBDaemonThread.__init__(self)
+    def __init__(self, sock, py_db, terminate_on_socket_close=True):
+        PyDBDaemonThread.__init__(self, py_db)
         self.sock = sock
+        self.__terminate_on_socket_close = terminate_on_socket_close
         self.setName("pydevd.Writer")
-        self.cmdQueue = _queue.Queue()
+        self._cmd_queue = _queue.Queue()
         if pydevd_vm_type.get_vm_type() == 'python':
             self.timeout = 0
         else:
@@ -348,8 +382,8 @@ class WriterThread(PyDBDaemonThread):
 
     def add_command(self, cmd):
         ''' cmd is NetCommand '''
-        if not self.killReceived:  # we don't take new data after everybody die
-            self.cmdQueue.put(cmd)
+        if not self._kill_received:  # we don't take new data after everybody die
+            self._cmd_queue.put(cmd, False)
 
     @overrides(PyDBDaemonThread._on_run)
     def _on_run(self):
@@ -359,71 +393,102 @@ class WriterThread(PyDBDaemonThread):
             while True:
                 try:
                     try:
-                        cmd = self.cmdQueue.get(1, 0.1)
+                        cmd = self._cmd_queue.get(True, 0.1)
                     except _queue.Empty:
-                        if self.killReceived:
+                        if self._kill_received:
+                            pydev_log.debug('WriterThread: kill_received (sock.shutdown(SHUT_WR))')
                             try:
                                 self.sock.shutdown(SHUT_WR)
-                                self.sock.close()
                             except:
                                 pass
+                            # Note: don't close the socket, just send the shutdown,
+                            # then, when no data is received on the reader, it can close
+                            # the socket.
+                            # See: https://blog.netherlabs.nl/articles/2009/01/18/the-ultimate-so_linger-page-or-why-is-my-tcp-not-reliable
 
-                            return  # break if queue is empty and killReceived
+                            # try:
+                            #     self.sock.close()
+                            # except:
+                            #     pass
+
+                            return  # break if queue is empty and _kill_received
                         else:
                             continue
                 except:
-                    # pydevd_log(0, 'Finishing debug communication...(1)')
+                    # pydev_log.info('Finishing debug communication...(1)')
                     # when liberating the thread here, we could have errors because we were shutting down
                     # but the thread was still not liberated
                     return
+
+                if cmd.as_dict is not None:
+                    for listener in self.py_db.dap_messages_listeners:
+                        listener.before_send(cmd.as_dict)
+
                 cmd.send(self.sock)
 
                 if cmd.id == CMD_EXIT:
+                    pydev_log.debug('WriterThread: CMD_EXIT received')
                     break
                 if time is None:
                     break  # interpreter shutdown
                 time.sleep(self.timeout)
         except Exception:
-            GlobalDebuggerHolder.global_dbg.finish_debugging_session()
-            if DebugInfoHolder.DEBUG_TRACE_LEVEL >= 0:
-                traceback.print_exc()
+            if self.__terminate_on_socket_close:
+                self.py_db.dispose_and_kill_all_pydevd_threads()
+                if DebugInfoHolder.DEBUG_TRACE_LEVEL > 0:
+                    pydev_log_exception()
+        finally:
+            pydev_log.debug('WriterThread: exit')
 
     def empty(self):
-        return self.cmdQueue.empty()
+        return self._cmd_queue.empty()
+
+    @overrides(PyDBDaemonThread.do_kill_pydev_thread)
+    def do_kill_pydev_thread(self):
+        if not self._kill_received:
+            # Add command before setting the kill flag (otherwise the command may not be added).
+            exit_cmd = self.py_db.cmd_factory.make_exit_command(self.py_db)
+            self.add_command(exit_cmd)
+
+        PyDBDaemonThread.do_kill_pydev_thread(self)
+
+
+def create_server_socket(host, port):
+    try:
+        server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        if IS_WINDOWS and not IS_JYTHON:
+            server.setsockopt(SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            server.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+
+        server.bind((host, port))
+        server.settimeout(None)
+    except Exception:
+        server.close()
+        raise
+
+    return server
 
 
 def start_server(port):
     ''' binds to a port, waits for the debugger to connect '''
-    s = socket(AF_INET, SOCK_STREAM)
-    s.settimeout(None)
-
-    try:
-        from socket import SO_REUSEPORT
-        s.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1)
-    except ImportError:
-        s.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
-
-    s.bind(('', port))
-    pydevd_log(1, "Bound to port ", str(port))
+    s = create_server_socket(host='', port=port)
 
     try:
         s.listen(1)
-        newSock, _addr = s.accept()
-        pydevd_log(1, "Connection accepted")
+        new_socket, _addr = s.accept()
+        pydev_log.info("Connection accepted")
         # closing server socket is not necessary but we don't need it
-        s.shutdown(SHUT_RDWR)
         s.close()
-        return newSock
-
+        return new_socket
     except:
-        sys.stderr.write("Could not bind to port: %s\n" % (port,))
-        sys.stderr.flush()
-        traceback.print_exc()
+        pydev_log.exception("Could not bind to port: %s\n", port)
+        raise
 
 
 def start_client(host, port):
     ''' connects to a host/port '''
-    pydevd_log(1, "Connecting to ", host, ":", str(port))
+    pydev_log.info("Connecting to %s:%s", host, port)
 
     s = socket(AF_INET, SOCK_STREAM)
 
@@ -446,12 +511,10 @@ def start_client(host, port):
         s.settimeout(timeout)
         s.connect((host, port))
         s.settimeout(None)  # no timeout after connected
-        pydevd_log(1, "Connected.")
+        pydev_log.info("Connected.")
         return s
     except:
-        sys.stderr.write("Could not connect to %s: %s\n" % (host, port))
-        sys.stderr.flush()
-        traceback.print_exc()
+        pydev_log.exception("Could not connect to %s: %s", host, port)
         raise
 
 
@@ -464,7 +527,7 @@ class InternalThreadCommand(object):
 
     The reason for their existence is that some commands have to be executed
     on specific threads. These are the InternalThreadCommands that get
-    get posted to PyDB.cmdQueue.
+    get posted to PyDB.
     '''
 
     def __init__(self, thread_id, method=None, *args, **kwargs):
@@ -497,19 +560,17 @@ class InternalThreadCommandForAnyThread(InternalThreadCommand):
         InternalThreadCommand.__init__(self, thread_id, method, *args, **kwargs)
 
         self.executed = False
-        self.lock = thread.allocate_lock()
+        self.lock = ForkSafeLock()
 
     def can_be_executed_by(self, thread_id):
         return True  # Can be executed by any thread.
 
     def do_it(self, dbg):
-        self.lock.acquire()
-        try:
+        with self.lock:
             if self.executed:
                 return
             self.executed = True
-        finally:
-            self.lock.release()
+
         InternalThreadCommand.do_it(self, dbg)
 
 
@@ -549,13 +610,15 @@ class InternalGetThreadStack(InternalThreadCommand):
     stopped in a breakpoint).
     '''
 
-    def __init__(self, seq, thread_id, py_db, set_additional_thread_info, fmt, timeout=.5):
+    def __init__(self, seq, thread_id, py_db, set_additional_thread_info, fmt, timeout=.5, start_frame=0, levels=0):
         InternalThreadCommand.__init__(self, thread_id)
         self._py_db = weakref.ref(py_db)
         self._timeout = time.time() + timeout
         self.seq = seq
         self._cmd = None
         self._fmt = fmt
+        self._start_frame = start_frame
+        self._levels = levels
 
         # Note: receives set_additional_thread_info to avoid a circular import
         # in this module.
@@ -573,7 +636,7 @@ class InternalGetThreadStack(InternalThreadCommand):
             frame = additional_info.get_topmost_frame(t)
         try:
             self._cmd = py_db.cmd_factory.make_get_thread_stack_message(
-                py_db, self.seq, self.thread_id, frame, self._fmt, must_be_suspended=not timed_out)
+                py_db, self.seq, self.thread_id, frame, self._fmt, must_be_suspended=not timed_out, start_frame=self._start_frame, levels=self._levels)
         finally:
             frame = None
             t = None
@@ -587,27 +650,27 @@ class InternalGetThreadStack(InternalThreadCommand):
             self._cmd = None
 
 
-class InternalRunThread(InternalThreadCommand):
-
-    def do_it(self, dbg):
-        t = pydevd_find_thread_by_id(self.thread_id)
-        if t:
-            t.additional_info.pydev_step_cmd = -1
-            t.additional_info.pydev_step_stop = None
-            t.additional_info.pydev_state = STATE_RUN
+def internal_run_thread(thread, set_additional_thread_info):
+    info = set_additional_thread_info(thread)
+    info.pydev_original_step_cmd = -1
+    info.pydev_step_cmd = -1
+    info.pydev_step_stop = None
+    info.pydev_state = STATE_RUN
 
 
-class InternalStepThread(InternalThreadCommand):
+def internal_step_in_thread(py_db, thread_id, cmd_id, set_additional_thread_info):
+    thread_to_step = pydevd_find_thread_by_id(thread_id)
+    if thread_to_step:
+        info = set_additional_thread_info(thread_to_step)
+        info.pydev_original_step_cmd = cmd_id
+        info.pydev_step_cmd = cmd_id
+        info.pydev_state = STATE_RUN
 
-    def __init__(self, thread_id, cmd_id):
-        self.thread_id = thread_id
-        self.cmd_id = cmd_id
-
-    def do_it(self, dbg):
-        t = pydevd_find_thread_by_id(self.thread_id)
-        if t:
-            t.additional_info.pydev_step_cmd = self.cmd_id
-            t.additional_info.pydev_state = STATE_RUN
+    if py_db.stepping_resumes_all_threads:
+        threads = pydevd_utils.get_non_pydevd_threads()
+        for t in threads:
+            if t is not thread_to_step:
+                internal_run_thread(t, set_additional_thread_info)
 
 
 class InternalSetNextStatementThread(InternalThreadCommand):
@@ -628,6 +691,7 @@ class InternalSetNextStatementThread(InternalThreadCommand):
     def do_it(self, dbg):
         t = pydevd_find_thread_by_id(self.thread_id)
         if t:
+            t.additional_info.pydev_original_step_cmd = self.cmd_id
             t.additional_info.pydev_step_cmd = self.cmd_id
             t.additional_info.pydev_next_line = int(self.line)
             t.additional_info.pydev_func_name = self.func_name
@@ -751,9 +815,6 @@ def internal_change_variable_json(py_db, request):
     deal with changing at a frame level, so, currently changing the contents of something
     in a different scope is currently not supported.
 
-    TODO: make the resolvers structure resolve the name and change accordingly -- for instance, the
-    list resolver should change the value considering the index.
-
     :param SetVariableRequest request:
     '''
     # : :type arguments: SetVariableArguments
@@ -763,37 +824,46 @@ def internal_change_variable_json(py_db, request):
     if hasattr(fmt, 'to_dict'):
         fmt = fmt.to_dict()
 
-    # : :type frame: _FrameVariable
-    frame_variable = py_db.suspended_frames_manager.get_variable(variables_reference)
-    if hasattr(frame_variable, 'frame'):
-        frame = frame_variable.frame
+    try:
+        variable = py_db.suspended_frames_manager.get_variable(variables_reference)
+    except KeyError:
+        variable = None
 
-        pydevd_vars.change_attr_expression(frame, arguments.name, arguments.value, py_db)
+    if variable is None:
+        _write_variable_response(
+            py_db, request, value='', success=False, message='Unable to find variable container to change: %s.' % (variables_reference,))
+        return
 
-        for child_var in frame_variable.get_children_variables(fmt=fmt):
-            if child_var.get_name() == arguments.name:
-                var_data = child_var.get_var_data(fmt=fmt)
-                body = SetVariableResponseBody(
-                    value=var_data['value'],
-                    type=var_data['type'],
-                    variablesReference=var_data.get('variablesReference'),
-                    namedVariables=var_data.get('namedVariables'),
-                    indexedVariables=var_data.get('indexedVariables'),
-                )
-                variables_response = pydevd_base_schema.build_response(request, kwargs={'body':body})
-                py_db.writer.add_command(NetCommand(CMD_RETURN, 0, variables_response, is_json=True))
-                break
+    child_var = variable.change_variable(arguments.name, arguments.value, py_db, fmt=fmt)
 
-    # If it's gotten here we haven't been able to evaluate it properly. Let the client know.
+    if child_var is None:
+        _write_variable_response(
+            py_db, request, value='', success=False, message='Unable to change: %s.' % (arguments.name,))
+        return
+
+    var_data = child_var.get_var_data(fmt=fmt)
+    body = SetVariableResponseBody(
+        value=var_data['value'],
+        type=var_data['type'],
+        variablesReference=var_data.get('variablesReference'),
+        namedVariables=var_data.get('namedVariables'),
+        indexedVariables=var_data.get('indexedVariables'),
+    )
+    variables_response = pydevd_base_schema.build_response(request, kwargs={'body':body})
+    py_db.writer.add_command(NetCommand(CMD_RETURN, 0, variables_response, is_json=True))
+
+
+def _write_variable_response(py_db, request, value, success, message):
     body = SetVariableResponseBody('')
     variables_response = pydevd_base_schema.build_response(
         request,
         kwargs={
             'body':body,
             'success': False,
-            'message': 'Unable to change: %s.' % (arguments.name,)
+            'message': message
     })
-    return NetCommand(CMD_RETURN, 0, variables_response, is_json=True)
+    cmd = NetCommand(CMD_RETURN, 0, variables_response, is_json=True)
+    py_db.writer.add_command(cmd)
 
 
 def internal_get_frame(dbg, seq, thread_id, frame_id):
@@ -858,16 +928,20 @@ def _evaluate_response(py_db, request, result, error_message=''):
         variables_response = pydevd_base_schema.build_response(request, kwargs={'body':body})
         py_db.writer.add_command(NetCommand(CMD_RETURN, 0, variables_response, is_json=True))
     else:
-        body = pydevd_schema.EvaluateResponseBody(result='', variablesReference=0)
+        body = pydevd_schema.EvaluateResponseBody(result=result, variablesReference=0)
         variables_response = pydevd_base_schema.build_response(request, kwargs={
             'body':body, 'success':False, 'message': error_message})
         py_db.writer.add_command(NetCommand(CMD_RETURN, 0, variables_response, is_json=True))
+
+
+_global_frame = None
 
 
 def internal_evaluate_expression_json(py_db, request, thread_id):
     '''
     :param EvaluateRequest request:
     '''
+    global _global_frame
     # : :type arguments: EvaluateArguments
 
     arguments = request.arguments
@@ -885,39 +959,57 @@ def internal_evaluate_expression_json(py_db, request, thread_id):
             _evaluate_response(py_db, request, '', error_message='Expression is not valid utf-8.')
             raise
 
-    frame = py_db.find_frame(thread_id, frame_id)
-    result = pydevd_vars.evaluate_expression(py_db, frame, expression, is_exec=False)
-    is_error = isinstance(result, ExceptionOnEvaluate)
+    try_exec = False
+    if frame_id is None:
+        if _global_frame is None:
+            # Lazily create a frame to be used for evaluation with no frame id.
 
-    if is_error:
-        if context == 'hover':
-            _evaluate_response(py_db, request, result='')
-            return
+            def __create_frame():
+                yield sys._getframe()
 
-        elif context == 'repl':
-            try:
-                pydevd_vars.evaluate_expression(py_db, frame, expression, is_exec=True)
-            except Exception as ex:
-                err = ''.join(traceback.format_exception_only(type(ex), ex))
-                _evaluate_response(py_db, request, result='', error_message=err)
+            _global_frame = next(__create_frame())
+
+        frame = _global_frame
+        try_exec = True  # Always exec in this case
+        eval_result = None
+    else:
+        frame = py_db.find_frame(thread_id, frame_id)
+        eval_result = pydevd_vars.evaluate_expression(py_db, frame, expression, is_exec=False)
+        is_error = isinstance(eval_result, ExceptionOnEvaluate)
+        if is_error:
+            if context == 'hover':  # In a hover it doesn't make sense to do an exec.
+                _evaluate_response(py_db, request, result='')
                 return
-            # No result on exec.
-            _evaluate_response(py_db, request, result='')
+            else:
+                try_exec = context == 'repl'
+
+    if try_exec:
+        try:
+            pydevd_vars.evaluate_expression(py_db, frame, expression, is_exec=True)
+        except Exception as ex:
+            err = ''.join(traceback.format_exception_only(type(ex), ex))
+            # Currently there is an issue in VSC where returning success=false for an
+            # eval request, in repl context, VSC does not show the error response in
+            # the debug console. So return the error message in result as well.
+            _evaluate_response(py_db, request, result=err, error_message=err)
             return
+        # No result on exec.
+        _evaluate_response(py_db, request, result='')
+        return
 
     # Ok, we have the result (could be an error), let's put it into the saved variables.
     frame_tracker = py_db.suspended_frames_manager.get_frame_tracker(thread_id)
     if frame_tracker is None:
         # This is not really expected.
-        _evaluate_response(py_db, request, result, error_message='Thread id: %s is not current thread id.' % (thread_id,))
+        _evaluate_response(py_db, request, result='', error_message='Thread id: %s is not current thread id.' % (thread_id,))
         return
 
-    variable = frame_tracker.obtain_as_variable(expression, result)
+    variable = frame_tracker.obtain_as_variable(expression, eval_result, frame=frame)
     var_data = variable.get_var_data(fmt=fmt)
 
     body = pydevd_schema.EvaluateResponseBody(
         result=var_data['value'],
-        variablesReference=var_data.get('variableReference', 0),
+        variablesReference=var_data.get('variablesReference', 0),
         type=var_data.get('type'),
         presentationHint=var_data.get('presentationHint'),
         namedVariables=var_data.get('namedVariables'),
@@ -998,12 +1090,12 @@ def internal_set_expression_json(py_db, request, thread_id):
 
     # Now that the exec is done, get the actual value changed to return.
     result = pydevd_vars.evaluate_expression(py_db, frame, expression, is_exec=False)
-    variable = frame_tracker.obtain_as_variable(expression, result)
+    variable = frame_tracker.obtain_as_variable(expression, result, frame=frame)
     var_data = variable.get_var_data(fmt=fmt)
 
     body = pydevd_schema.SetExpressionResponseBody(
         value=var_data['value'],
-        variablesReference=var_data.get('variableReference', 0),
+        variablesReference=var_data.get('variablesReference', 0),
         type=var_data.get('type'),
         presentationHint=var_data.get('presentationHint'),
         namedVariables=var_data.get('namedVariables'),
@@ -1076,6 +1168,101 @@ def internal_get_description(dbg, seq, thread_id, frame_id, expression):
         dbg.writer.add_command(cmd)
 
 
+def build_exception_info_response(dbg, thread_id, request_seq, set_additional_thread_info, iter_visible_frames_info, max_frames):
+    '''
+    :return ExceptionInfoResponse
+    '''
+    thread = pydevd_find_thread_by_id(thread_id)
+    additional_info = set_additional_thread_info(thread)
+    topmost_frame = additional_info.get_topmost_frame(thread)
+
+    frames = []
+    exc_type = None
+    exc_desc = None
+    if topmost_frame is not None:
+        try:
+            frames_list = dbg.suspended_frames_manager.get_frames_list(thread_id)
+            if frames_list is not None:
+                exc_type = frames_list.exc_type
+                exc_desc = frames_list.exc_desc
+                trace_obj = frames_list.trace_obj
+                for frame_id, frame, method_name, original_filename, filename_in_utf8, lineno in iter_visible_frames_info(
+                        dbg, frames_list):
+
+                    line_text = linecache.getline(original_filename, lineno)
+
+                    # Never filter out plugin frames!
+                    if not getattr(frame, 'IS_PLUGIN_FRAME', False):
+                        if dbg.is_files_filter_enabled and dbg.apply_files_filter(frame, original_filename, False):
+                            continue
+                    frames.append((filename_in_utf8, lineno, method_name, line_text))
+        finally:
+            topmost_frame = None
+
+    name = 'exception: type unknown'
+    if exc_type is not None:
+        try:
+            name = exc_type.__qualname__
+        except:
+            try:
+                name = exc_type.__name__
+            except:
+                try:
+                    name = str(exc_type)
+                except:
+                    pass
+
+    description = 'exception: no description'
+    if exc_desc is not None:
+        try:
+            description = str(exc_desc)
+        except:
+            pass
+
+    stack_str = ''.join(traceback.format_list(frames[-max_frames:]))
+
+    # This is an extra bit of data used by Visual Studio
+    source_path = frames[0][0] if frames else ''
+
+    if thread.stop_reason == CMD_STEP_CAUGHT_EXCEPTION:
+        break_mode = pydevd_schema.ExceptionBreakMode.ALWAYS
+    else:
+        break_mode = pydevd_schema.ExceptionBreakMode.UNHANDLED
+
+    response = pydevd_schema.ExceptionInfoResponse(
+        request_seq=request_seq,
+        success=True,
+        command='exceptionInfo',
+        body=pydevd_schema.ExceptionInfoResponseBody(
+            exceptionId=name,
+            description=description,
+            breakMode=break_mode,
+            details=pydevd_schema.ExceptionDetails(
+                message=description,
+                typeName=name,
+                stackTrace=stack_str,
+                source=source_path
+            )
+        )
+    )
+    return response
+
+
+def internal_get_exception_details_json(dbg, request, thread_id, max_frames, set_additional_thread_info=None, iter_visible_frames_info=None):
+    ''' Fetch exception details
+    '''
+    try:
+        response = build_exception_info_response(dbg, thread_id, request.seq, set_additional_thread_info, iter_visible_frames_info, max_frames)
+    except:
+        exc = get_exception_traceback_str()
+        response = pydevd_base_schema.build_response(request, kwargs={
+            'success': False,
+            'message': exc,
+            'body':{}
+        })
+    dbg.writer.add_command(NetCommand(CMD_RETURN, 0, response, is_json=True))
+
+
 class InternalGetBreakpointException(InternalThreadCommand):
     ''' Send details of exception raised while evaluating conditional breakpoint '''
 
@@ -1125,7 +1312,7 @@ class InternalSendCurrExceptionTrace(InternalThreadCommand):
 
     def do_it(self, dbg):
         try:
-            cmd = dbg.cmd_factory.make_send_curr_exception_trace_message(self.sequence, self.thread_id, self.curr_frame_id, *self.arg)
+            cmd = dbg.cmd_factory.make_send_curr_exception_trace_message(dbg, self.sequence, self.thread_id, self.curr_frame_id, *self.arg)
             del self.arg
             dbg.writer.add_command(cmd)
         except:
@@ -1305,7 +1492,7 @@ class InternalLoadFullValue(InternalThreadCommand):
                     var_obj = pydevd_vars.getVariable(dbg, self.thread_id, self.frame_id, scope, attrs)
                     var_objects.append((var_obj, name))
 
-            t = GetValueAsyncThreadDebug(dbg, self.sequence, var_objects)
+            t = GetValueAsyncThreadDebug(dbg, dbg, self.sequence, var_objects)
             t.start()
         except:
             exc = get_exception_traceback_str()
@@ -1319,8 +1506,8 @@ class AbstractGetValueAsyncThread(PyDBDaemonThread):
     Abstract class for a thread, which evaluates values for async variables
     '''
 
-    def __init__(self, frame_accessor, seq, var_objects):
-        PyDBDaemonThread.__init__(self)
+    def __init__(self, py_db, frame_accessor, seq, var_objects):
+        PyDBDaemonThread.__init__(self, py_db)
         self.frame_accessor = frame_accessor
         self.seq = seq
         self.var_objs = var_objects
@@ -1377,9 +1564,9 @@ def pydevd_find_thread_by_id(thread_id):
                 return i
 
         # This can happen when a request comes for a thread which was previously removed.
-        pydevd_log(1, "Could not find thread %s\n" % (thread_id,))
-        pydevd_log(1, "Available: %s\n" % ([get_thread_id(t) for t in threads],))
+        pydev_log.info("Could not find thread %s.", thread_id)
+        pydev_log.info("Available: %s.", ([get_thread_id(t) for t in threads],))
     except:
-        traceback.print_exc()
+        pydev_log.exception()
 
     return None

@@ -29,43 +29,74 @@
         <div class="section" id="bronze-sponsors">
         <h1>Bronze Sponsors</h1>
 
-        <a href="https://lainaa-helposti.fi/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/lainaa_helposti.png" alt="laina-helposti.fi" title="https://lainaa-helposti.fi/" /></a>
+		<a href="https://fair-laan.se/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/fair_laan_se.jpg" alt="fair-laan.se" title="https://fair-laan.se/" /></a>
 
-        <a href="https://slotcatalog.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/slotcatalog.png" alt="slotcatalog.com" title="https://slotcatalog.com" /></a>
+		<a href="https://moneypug.co.uk/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/moneypug.png" alt="moneypug.co.uk" title="https://moneypug.co.uk/" /></a>
 
-        <a href="https://lejonfinans.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/lejofinans.png" alt="CodeFirst" title="https://lejonfinans.com/" /></a>
+		<a href="https://mrcasinova.com/no/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/mrcasinova.png" alt="nettcasino" title="https://mrcasinova.com/no/" /></a>
+
+		<a href="https://monovm.com/vps-linux/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/monovm.png" alt="monovm.com" title="https://monovm.com/vps-linux/" /></a>
+
+		<a href="https://1gbits.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/1gbits.png" alt="1gbits.com" title="https://1gbits.com" /></a>
+
+		<a href="https://vpn.surf/buy-vpn/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/vpn_surf.png" alt="vpn.surf" title="https://vpn.surf/buy-vpn/" /></a>
+
+
+		<br/>
+        <a href="https://lejonfinans.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/lejofinans.png" alt="LejonFinans" title="https://lejonfinans.com/" /></a>
+
+		<a href="https://www.immigrationlawofmt.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/immigrationlawofmt.png" alt="immigrationlawofmt" title="https://www.immigrationlawofmt.com" /></a>
+
+        <a href="https://www.ecosecretariat.org/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/ecosecretariat.png" alt="Eco Secretariat" title="https://www.ecosecretariat.org/" /></a>
+
+        <a href="https://essayshark.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/essay_shark.png" alt="EssayShark" title="https://essayshark.com/" /></a>
+
+        <a href="https://bestwebhostingaustralia.org" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/aussie_hosting.png" alt="BestWebHostingAustralia" title="https://bestwebhostingaustralia.org" /></a>
 
         <a href="https://www.privatkreditsofort.ch/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/privatkredit-sofort.png" alt="PrivatkreditSofort.ch" title="https://www.privatkreditsofort.ch/" /></a>
 
-        <a href="https://www.codefirst.co.uk/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/codefirst.png" alt="CodeFirst" title="https://www.codefirst.co.uk/" /></a>
-
 		<br/>
+		<a href="https://rocketpayz.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/rocketpayz.png" alt="rocketpayz.com" title="https://rocketpayz.com/" /></a>
+
+        <a href="https://www.codefirst.co.uk/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/codefirst.png" alt="CodeFirst" title="https://www.codefirst.co.uk/" /></a>
 
         <a href="http://smålånutensikkerhet.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/skazani_logo.png" alt="http://smålånutensikkerhet.com/" title="http://smålånutensikkerhet.com/" /></a>
 
-        <a href="https://talentplot.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/talentplot.png" alt="TalentPlot" title="https://talentplot.com/" /></a>
+        <a href="https://slotcatalog.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/slotcatalog.png" alt="slotcatalog.com" title="https://slotcatalog.com" /></a>
+
+		<a href="https://nyecasinonorge.org/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/nyecasinonorge.png" alt="nyecasinonorge.org" title="https://nyecasinonorge.org/" /></a>
 
         <a href="https://www.websitehostingrating.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/webhostingrating.png" alt="websitehostingrating" title="https://www.websitehostingrating.com/" /></a>
 
-        <a href="https://www.redfin.com/city/16163/WA/Seattle" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/redfin.png" alt="Redfin" title="https://www.redfin.com/city/16163/WA/Seattle" /></a>
-
-        <a href="https://www.immigrationlawofmt.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/immigrationlawofmt.png" alt="immigrationlawofmt" title="https://www.immigrationlawofmt.com" /></a>
 
 		<br/>
+        <a href="https://lainaa-helposti.fi/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/lainaa_helposti.png" alt="laina-helposti.fi" title="https://lainaa-helposti.fi/" /></a>
+
+        <a href="https://couponscorpion.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/udemy_coupons.png" alt="Udemy Coupon" title="https://couponscorpion.com/" /></a>
+
         <a href="https://www.scams.info/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/scams-info.png" alt="scams.info" title="https://www.scams.info/" /></a>
 
-        <a href="https://superbwebsitebuilders.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/superbwebsitebuilders.png" alt="superbwebsitebuilders" title="https://superbwebsitebuilders.com/" /></a>
+        <a href="https://smslåndirektutbetalning.se/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/smslan.png" alt="SmsLånDirektUtbetalning.se" title="https://smslåndirektutbetalning.se/" /></a>
+
+        <a href="https://esportbetting.eu/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/esport_betting.png" alt="eSportBetting" title="https://esportbetting.eu/" /></a>
+
+		<a href="https://casinopiloten.com/bonus" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/casinopiloten.png" alt="casinobonus" title="https://casinopiloten.com/bonus" /></a>
+
+		<br/>
+		<a href="https://gamblescope.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/gamblescope.png" alt="gamblescope.com" title="https://gamblescope.com/" /></a>
 
         <a href="https://allesrefurbished.nl" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/alles_refurbished.png" alt="Alles Refurbished - overview of refurbished tablets, telephones and more (in Dutch)" title="Alles Refurbished - overview of refurbished tablets, telephones and more (in Dutch)" /></a>
 
         <a href="https://netotraffic.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/netotraffic.png" alt="Netotraffic" title="https://netotraffic.com/" /></a>
 
-        <a href="https://www.parcelabc.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/parcelabc-logo.jpg" alt="ParcelABC" title="ParcelABC" /></a>
-
-		<br/>
         <a href="https://www.vpsserver.com" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/vpsserver50-50.png" alt="vpsserver" title="https://www.vpsserver.com" /></a>
 
-        <a href="https://smslåndirektutbetalning.se/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/smslan.png" alt="SmsLånDirektUtbetalning.se" title="https://smslåndirektutbetalning.se/" /></a>
+        <a href="https://gamblerspro.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/gamblerspro.png" alt="Online casino reviews" title="https://gamblerspro.com"/></a>
+
+        <a href="https://superbwebsitebuilders.com/" border=0><img class="sponsors" style="width:50px;height:50px;" src="images/sponsors/superbwebsitebuilders.png" alt="superbwebsitebuilders" title="https://superbwebsitebuilders.com/" /></a>
+
+
+
 
         </div>
 
@@ -175,13 +206,15 @@ Gold Sponsors
    <a href="http://www.liclipse.com/" border=0><img class="sponsors" src="images/sponsors/liclipse.png" alt="LiClipse" title="http://www.liclipse.com/" /></a>
    <!--Added 2016-04-05-->
    <a href="http://www.tracetronic.com" border=0><img class="sponsors" src="images/sponsors/tracetronic.png" alt="Tracetronic" title="http://www.tracetronic.com/" /></a>
-   <!--Added 2014-07-16-->
-   <a href="http://www.kichwacoders.com/" border=0><img class="sponsors" src="images/sponsors/kichwacoders.png" alt="Kichwacoders" title="http://www.kichwacoders.com/" /></a>
+   <!--Added 2019-04-24-->
+   <a href="https://websitesetup.org/" border=0><img class="sponsors" src="images/sponsors/websitesetup.png" alt="WebsiteSetup" title="https://websitesetup.org/" /></a>
    <br class="hideWhenScreenSmall"/>
    <!--Added 2016-04-04-->
    <a href="http://www.squishlist.com/" border=0><img class="sponsors" src="images/sponsors/squishlist.png" alt="Squishlist" title="http://www.squishlist.com/" /></a>
    <!--Added 2014-07-16-->
    <a href="http://www.pyvmmonitor.com/" border=0><img class="sponsors" src="images/sponsors/pyvmmonitor.png" alt="PyVmMonitor" title="http://www.pyvmmonitor.com/" /></a>
+   <!--Added 2019-06-03-->
+   <a href="https://software.intel.com/distribution-for-python" border=0><img class="sponsors" src="images/sponsors/intel.png" alt="Intel" title="https://software.intel.com/distribution-for-python" /></a>
 
 Supporting PyDev
 =================
@@ -195,6 +228,31 @@ To show your appreciation for PyDev and to keep it going strong, help to crowdfu
 .. _`the download page`: download.html#pydev-does-not-appear-after-install
 
 
+Release 7.3.0 (2019-08-16)
+=============================
+
+* Debugger improvements (updated to pydevd 1.7.1).
+
+	* Fix thread cleanup issue on fork (debugger could crash when subprocess pool was closed).
+	* Improvements in attach to pid.
+	* When setting the tracing in one thread attach it to other threads too.
+
+* Make it possible to select the black executable (**#PyDev-1003**).
+* Update debug console to work with newer versions of Eclipse (patch by Paul Pazderski).
+* Fix code completion for non-english locale (patch by guyingzhao).
+
+
+Release 7.2.1 (2019-04-26)
+=============================
+
+* Debugger improvements (updated to pydevd 1.6.1).
+
+	* IronPython is debuggable again.
+
+* Improved performance of code which checked if some text was a link in the console (which was the cause for some delays when too much text was printed in the console).
+* Duplicate signature is no longer reported with typing.orverload (**#PyDev-970**).
+* Fixed highlighting variables in f-strings (**#PyDev-973**).
+
 Release 7.2.0 (2019-03-25)
 =============================
 
@@ -206,53 +264,6 @@ Release 7.2.0 (2019-03-25)
 
 * Fixed issue where pipenv executable search was being executed over and over when it was not found.
 
-
-Release 7.1.0 (2019-02-03)
-=============================
-
-* Accept **#region** / **#endregion** (for code folding) at any level.
-
-* Fixed deadlock during race-condition (**#PyDev-961**).
-
-* Fixed hover links when different pydev_link pointers are used (patch by Daniel).
-
-* Fixed issue where the auto-formatter changed only the **\\n** in a **\\r\\n** and the editor presentation became wrong.
-
-* Many debugger improvements (updated to pydevd 1.5.0).
-
-* To use the interactive console in IPython mode, the following environment variable must be set: **IPYTHONENABLE=True** (previously it was enabled whenever IPython was available).
-
-Release 7.0.3 (2018-11-08)
-=============================
-
-* **Mypy**
-
-	* PyDev can now use Mypy when doing code analysis.
-
-* **Black Formatter**
-
-	* PyDev can now use black as the code formatting engine.
-
-* **Virtual environments**
-
-	* It's now possible to use pipenv for managing virtual environments.
-	* It's possible to manage virtual environments from the editor.
-
-		* Ctrl+2, pip <command>
-		* Ctrl+2, pipenv <command>
-		* Ctrl+2, conda <command>
-
-* **Debugger**
-
-	* Should be **much** faster for those on Python 3.6 onwards with cython extensions (using frame evaluation).
-
-* The Python 3.7 grammar is now available as an option (even though it's the same as 3.6).
-
-* Removed support for using the Python 2.4 grammar.
-
-* The 2to3 integration shows a better dialog.
-
-* It's possible to autogenerate docstring parameters using the Google Code format (patch by ghbcode).
 
 
 `View release notes for previous releases`_

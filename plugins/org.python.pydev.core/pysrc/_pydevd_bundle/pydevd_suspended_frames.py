@@ -3,12 +3,15 @@ import sys
 
 from _pydev_imps._pydev_saved_modules import threading
 from _pydevd_bundle.pydevd_constants import get_frame, dict_items, RETURN_VALUES_DICT, \
-    dict_iter_items
-import traceback
+    dict_iter_items, ForkSafeLock
 from _pydevd_bundle.pydevd_xml import get_variable_details, get_type
 from _pydev_bundle.pydev_override import overrides
-from _pydevd_bundle.pydevd_resolver import sorted_attributes_key
+from _pydevd_bundle.pydevd_resolver import sorted_attributes_key, TOO_LARGE_ATTR
 from _pydevd_bundle.pydevd_safe_repr import SafeRepr
+from _pydev_bundle import pydev_log
+from _pydevd_bundle import pydevd_vars
+from _pydev_bundle.pydev_imports import Exec
+from _pydevd_bundle.pydevd_frame_utils import FramesList
 
 
 class _AbstractVariable(object):
@@ -54,6 +57,9 @@ class _AbstractVariable(object):
             attributes.append('readOnly')
             name = '(return) %s' % (name,)
 
+        elif name in (TOO_LARGE_ATTR, '__len__'):
+            attributes.append('readOnly')
+
         var_data = {
             'name': name,
             'value': value,
@@ -65,6 +71,8 @@ class _AbstractVariable(object):
 
         if resolver is not None:  # I.e.: it's a container
             var_data['variablesReference'] = self.get_variable_reference()
+        else:
+            var_data['variablesReference'] = 0  # It's mandatory (although if == 0 it doesn't have children).
 
         if len(attributes) > 0:
             var_data['presentationHint'] = {'attributes': attributes}
@@ -74,11 +82,18 @@ class _AbstractVariable(object):
     def get_children_variables(self, fmt=None):
         raise NotImplementedError()
 
+    def get_child_variable_named(self, name, fmt=None):
+        for child_var in self.get_children_variables(fmt=fmt):
+            if child_var.get_name() == name:
+                return child_var
+        return None
+
 
 class _ObjectVariable(_AbstractVariable):
 
-    def __init__(self, name, value, register_variable, is_return_value=False, evaluate_name=None):
+    def __init__(self, name, value, register_variable, is_return_value=False, evaluate_name=None, frame=None):
         _AbstractVariable.__init__(self)
+        self.frame = frame
         self.name = name
         self.value = value
         self._register_variable = register_variable
@@ -112,15 +127,56 @@ class _ObjectVariable(_AbstractVariable):
                         else:
                             evaluate_name = parent_evaluate_name + evaluate_name
                     variable = _ObjectVariable(
-                        key, val, self._register_variable, evaluate_name=evaluate_name)
+                        key, val, self._register_variable, evaluate_name=evaluate_name, frame=self.frame)
                     children_variables.append(variable)
             else:
                 for key, val, evaluate_name in lst:
                     # No evaluate name
-                    variable = _ObjectVariable(key, val, self._register_variable)
+                    variable = _ObjectVariable(key, val, self._register_variable, frame=self.frame)
                     children_variables.append(variable)
 
         return children_variables
+
+    def change_variable(self, name, value, py_db, fmt=None):
+
+        children_variable = self.get_child_variable_named(name)
+        if children_variable is None:
+            return None
+
+        var_data = children_variable.get_var_data()
+        evaluate_name = var_data.get('evaluateName')
+
+        if not evaluate_name:
+            # Note: right now we only pass control to the resolver in the cases where
+            # there's no evaluate name (the idea being that if we can evaluate it,
+            # we can use that evaluation to set the value too -- if in the future
+            # a case where this isn't true is found this logic may need to be changed).
+            _type, _type_name, container_resolver = get_type(self.value)
+            if hasattr(container_resolver, 'change_var_from_name'):
+                try:
+                    new_value = eval(value)
+                except:
+                    return None
+                new_key = container_resolver.change_var_from_name(self.value, name, new_value)
+                if new_key is not None:
+                    return _ObjectVariable(
+                        new_key, new_value, self._register_variable, evaluate_name=None, frame=self.frame)
+
+                return None
+            else:
+                return None
+
+        frame = self.frame
+        if frame is None:
+            return None
+
+        try:
+            # This handles the simple cases (such as dict, list, object)
+            Exec('%s=%s' % (evaluate_name, value), frame.f_globals, frame.f_locals)
+        except:
+            return None
+
+        return self.get_child_variable_named(name, fmt=fmt)
 
 
 def sorted_variables_key(obj):
@@ -139,6 +195,13 @@ class _FrameVariable(_AbstractVariable):
         self._register_variable = register_variable
         self._register_variable(self)
 
+    def change_variable(self, name, value, py_db, fmt=None):
+        frame = self.frame
+
+        pydevd_vars.change_attr_expression(frame, name, value, py_db)
+
+        return self.get_child_variable_named(name, fmt=fmt)
+
     @overrides(_AbstractVariable.get_children_variables)
     def get_children_variables(self, fmt=None):
         children_variables = []
@@ -147,10 +210,10 @@ class _FrameVariable(_AbstractVariable):
             if is_return_value:
                 for return_key, return_value in dict_iter_items(val):
                     variable = _ObjectVariable(
-                        return_key, return_value, self._register_variable, is_return_value, '%s[%r]' % (key, return_key))
+                        return_key, return_value, self._register_variable, is_return_value, '%s[%r]' % (key, return_key), frame=self.frame)
                     children_variables.append(variable)
             else:
-                variable = _ObjectVariable(key, val, self._register_variable, is_return_value, key)
+                variable = _ObjectVariable(key, val, self._register_variable, is_return_value, key, frame=self.frame)
                 children_variables.append(variable)
 
         # Frame variables always sorted.
@@ -179,9 +242,7 @@ class _FramesTracker(object):
         # frame ids are kept in order (the first one is the suspended frame).
         self._thread_id_to_frame_ids = {}
 
-        # A map of the lines where it's suspended (needed for exceptions where the frame
-        # lineno is not correct).
-        self._frame_id_to_lineno = {}
+        self._thread_id_to_frames_list = {}
 
         # The main suspended thread (if this is a coroutine this isn't the id of the
         # coroutine thread, it's the id of the actual suspended thread).
@@ -191,7 +252,7 @@ class _FramesTracker(object):
         self._untracked = False
 
         # We need to be thread-safe!
-        self._lock = threading.Lock()
+        self._lock = ForkSafeLock()
 
         self._variable_reference_to_variable = {}
 
@@ -199,7 +260,7 @@ class _FramesTracker(object):
         variable_reference = variable.get_variable_reference()
         self._variable_reference_to_variable[variable_reference] = variable
 
-    def obtain_as_variable(self, name, value, evaluate_name=None):
+    def obtain_as_variable(self, name, value, evaluate_name=None, frame=None):
         if evaluate_name is None:
             evaluate_name = name
 
@@ -210,7 +271,7 @@ class _FramesTracker(object):
 
         # Still not created, let's do it now.
         return _ObjectVariable(
-            name, value, self._register_variable, is_return_value=False, evaluate_name=evaluate_name)
+            name, value, self._register_variable, is_return_value=False, evaluate_name=evaluate_name, frame=frame)
 
     def get_main_thread_id(self):
         return self._main_thread_id
@@ -218,22 +279,18 @@ class _FramesTracker(object):
     def get_variable(self, variable_reference):
         return self._variable_reference_to_variable[variable_reference]
 
-    def track(self, thread_id, frame, frame_id_to_lineno, frame_custom_thread_id=None):
+    def track(self, thread_id, frames_list, frame_custom_thread_id=None):
         '''
         :param thread_id:
             The thread id to be used for this frame.
 
-        :param frame:
-            The topmost frame which is suspended at the given thread.
-
-        :param frame_id_to_lineno:
-            If available, the line number for the frame will be gotten from this dict,
-            otherwise frame.f_lineno will be used (needed for unhandled exceptions as
-            the place where we report may be different from the place where it's raised).
+        :param FramesList frames_list:
+            A list of frames to be tracked (the first is the topmost frame which is suspended at the given thread).
 
         :param frame_custom_thread_id:
             If None this this is the id of the thread id for the custom frame (i.e.: coroutine).
         '''
+        assert frames_list.__class__ == FramesList
         with self._lock:
             coroutine_or_main_thread_id = frame_custom_thread_id or thread_id
 
@@ -242,12 +299,12 @@ class _FramesTracker(object):
 
             self._suspended_frames_manager._thread_id_to_tracker[coroutine_or_main_thread_id] = self
             self._main_thread_id = thread_id
-            self._frame_id_to_lineno = frame_id_to_lineno
 
             frame_ids_from_thread = self._thread_id_to_frame_ids.setdefault(
                 coroutine_or_main_thread_id, [])
 
-            while frame is not None:
+            self._thread_id_to_frames_list[coroutine_or_main_thread_id] = frames_list
+            for frame in frames_list:
                 frame_id = id(frame)
                 self._frame_id_to_frame[frame_id] = frame
                 _FrameVariable(frame, self._register_variable)  # Instancing is enough to register.
@@ -256,7 +313,7 @@ class _FramesTracker(object):
 
                 self._frame_id_to_main_thread_id[frame_id] = thread_id
 
-                frame = frame.f_back
+            frame = None
 
     def untrack_all(self):
         with self._lock:
@@ -273,17 +330,14 @@ class _FramesTracker(object):
             self._frame_id_to_frame.clear()
             self._frame_id_to_main_thread_id.clear()
             self._thread_id_to_frame_ids.clear()
-            self._frame_id_to_lineno.clear()
+            self._thread_id_to_frames_list.clear()
             self._main_thread_id = None
             self._suspended_frames_manager = None
             self._variable_reference_to_variable.clear()
 
-    def get_topmost_frame_and_frame_id_to_line(self, thread_id):
+    def get_frames_list(self, thread_id):
         with self._lock:
-            frame_ids = self._thread_id_to_frame_ids.get(thread_id)
-            if frame_ids is not None:
-                frame_id = frame_ids[0]
-                return self._frame_id_to_frame[frame_id], self._frame_id_to_lineno
+            return self._thread_id_to_frames_list.get(thread_id)
 
     def find_frame(self, thread_id, frame_id):
         with self._lock:
@@ -291,15 +345,13 @@ class _FramesTracker(object):
 
     def create_thread_suspend_command(self, thread_id, stop_reason, message, suspend_type):
         with self._lock:
-            frame_ids = self._thread_id_to_frame_ids[thread_id]
-
             # First one is topmost frame suspended.
-            frame = self._frame_id_to_frame[frame_ids[0]]
+            frames_list = self._thread_id_to_frames_list[thread_id]
 
             cmd = self.py_db.cmd_factory.make_thread_suspend_message(
-                thread_id, frame, stop_reason, message, suspend_type, frame_id_to_lineno=self._frame_id_to_lineno)
+                self.py_db, thread_id, frames_list, stop_reason, message, suspend_type)
 
-            frame = None
+            frames_list = None
             return cmd
 
 
@@ -358,11 +410,11 @@ class SuspendedFramesManager(object):
             raise KeyError()
         return frames_tracker.get_variable(variable_reference)
 
-    def get_topmost_frame_and_frame_id_to_line(self, thread_id):
+    def get_frames_list(self, thread_id):
         tracker = self._thread_id_to_tracker.get(thread_id)
         if tracker is None:
             return None
-        return tracker.get_topmost_frame_and_frame_id_to_line(thread_id)
+        return tracker.get_frames_list(thread_id)
 
     @contextmanager
     def track_frames(self, py_db):
@@ -395,5 +447,5 @@ class SuspendedFramesManager(object):
 
             return None
         except:
-            traceback.print_exc()
+            pydev_log.exception()
             return None

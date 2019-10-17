@@ -29,13 +29,14 @@ fi
 
 if [ "$PYDEVD_PYTHON_VERSION" = "3.6" ]; then
     conda install --yes pyqt=5 gevent
-    pip install "django>=2.1,<2.2"
+    pip install "django>=2.2,<2.3"
 fi
 
 if [ "$PYDEVD_PYTHON_VERSION" = "3.7" ]; then
     conda install --yes pyqt=5 matplotlib
-    # Note: track the latest django
+    # Note: track the latest web framework versions.
     pip install "django"
+    pip install "cherrypy"
 fi
 
 pip install untangle

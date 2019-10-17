@@ -1,12 +1,10 @@
-import traceback
-
 from _pydev_bundle.pydev_is_thread_alive import is_thread_alive
+from _pydev_bundle.pydev_log import exception as pydev_log_exception
 from _pydev_imps._pydev_saved_modules import threading
-from _pydevd_bundle.pydevd_constants import get_current_thread_id, IS_IRONPYTHON, NO_FTRACE
-from _pydevd_bundle.pydevd_kill_all_pydevd_threads import kill_all_pydev_threads
+from _pydevd_bundle.pydevd_constants import (get_current_thread_id, NO_FTRACE,
+    USE_CUSTOM_SYS_CURRENT_FRAMES_MAP, ForkSafeLock)
 from pydevd_file_utils import get_abs_path_real_path_and_base_from_frame, NORM_PATHS_AND_BASE_CONTAINER
-from _pydevd_bundle.pydevd_comm_constants import CMD_STEP_INTO, CMD_STEP_INTO_MY_CODE, CMD_STEP_OVER, \
-    CMD_STEP_OVER_MY_CODE, CMD_STEP_RETURN, CMD_STEP_RETURN_MY_CODE
+
 # IFDEF CYTHON
 # from cpython.object cimport PyObject
 # from cpython.ref cimport Py_INCREF, Py_XDECREF
@@ -14,10 +12,18 @@ from _pydevd_bundle.pydevd_comm_constants import CMD_STEP_INTO, CMD_STEP_INTO_MY
 from _pydevd_bundle.pydevd_frame import PyDBFrame
 # ENDIF
 
-# IFDEF CYTHON -- DONT EDIT THIS FILE (it is automatically generated)
-# cdef dict global_cache_skips
-# cdef dict global_cache_frame_skips
+# IFDEF CYTHON
+# cdef dict _global_notify_skipped_step_in
+# cython_inline_constant: CMD_STEP_INTO = 107
+# cython_inline_constant: CMD_STEP_INTO_MY_CODE = 144
+# cython_inline_constant: CMD_STEP_RETURN = 109
+# cython_inline_constant: CMD_STEP_RETURN_MY_CODE = 160
 # ELSE
+# Note: those are now inlined on cython.
+CMD_STEP_INTO = 107
+CMD_STEP_INTO_MY_CODE = 144
+CMD_STEP_RETURN = 109
+CMD_STEP_RETURN_MY_CODE = 160
 # ENDIF
 
 # Cache where we should keep that we completely skipped entering some context.
@@ -26,6 +32,21 @@ from _pydevd_bundle.pydevd_frame import PyDBFrame
 # It can be used when running regularly (without step over/step in/step return)
 global_cache_skips = {}
 global_cache_frame_skips = {}
+
+_global_notify_skipped_step_in = False
+_global_notify_skipped_step_in_lock = ForkSafeLock()
+
+
+def notify_skipped_step_in_because_of_filters(py_db, frame):
+    global _global_notify_skipped_step_in
+
+    with _global_notify_skipped_step_in_lock:
+        if _global_notify_skipped_step_in:
+            # Check with lock in place (callers should actually have checked
+            # before without the lock in place due to performance).
+            return
+        _global_notify_skipped_step_in = True
+        py_db.notify_skipped_step_in_because_of_filters(frame)
 
 # IFDEF CYTHON
 # cdef class SafeCallWrapper:
@@ -364,15 +385,7 @@ class ThreadTracer(object):
         is_stepping = pydev_step_cmd != -1
 
         try:
-            if py_db._finish_debugging_session:
-                if not py_db._termination_event_set:
-                    # that was not working very well because jython gave some socket errors
-                    try:
-                        if py_db.output_checker_thread is None:
-                            kill_all_pydev_threads()
-                    except:
-                        traceback.print_exc()
-                    py_db._termination_event_set = True
+            if py_db.pydb_disposed:
                 return None if event == 'call' else NO_FTRACE
 
             # if thread is not alive, cancel trace_dispatch processing
@@ -396,6 +409,10 @@ class ThreadTracer(object):
                 else:
                     # When stepping we can't take into account caching based on the breakpoints (only global filtering).
                     if cache_skips.get(frame_cache_key) == 1:
+
+                        if additional_info.pydev_original_step_cmd in (CMD_STEP_INTO, CMD_STEP_INTO_MY_CODE) and not _global_notify_skipped_step_in:
+                            notify_skipped_step_in_because_of_filters(py_db, frame)
+
                         back_frame = frame.f_back
                         if back_frame is not None and pydev_step_cmd in (CMD_STEP_INTO, CMD_STEP_INTO_MY_CODE, CMD_STEP_RETURN, CMD_STEP_RETURN_MY_CODE):
                             back_frame_cache_key = (back_frame.f_code.co_firstlineno, back_frame.f_code.co_name, back_frame.f_code.co_filename)
@@ -413,11 +430,11 @@ class ThreadTracer(object):
                 abs_path_real_path_and_base = get_abs_path_real_path_and_base_from_frame(frame)
 
             filename = abs_path_real_path_and_base[1]
-            file_type = py_db.get_file_type(abs_path_real_path_and_base)  # we don't want to debug threading or anything related to pydevd
+            file_type = py_db.get_file_type(frame, abs_path_real_path_and_base)  # we don't want to debug threading or anything related to pydevd
 
             if file_type is not None:
                 if file_type == 1:  # inlining LIB_FILE = 1
-                    if not py_db.in_project_scope(filename):
+                    if not py_db.in_project_scope(frame, abs_path_real_path_and_base[0]):
                         # if DEBUG: print('skipped: trace_dispatch (not in scope)', abs_path_real_path_and_base[-1], frame.f_lineno, event, frame.f_code.co_name, file_type)
                         cache_skips[frame_cache_key] = 1
                         return None if event == 'call' else NO_FTRACE
@@ -429,6 +446,10 @@ class ThreadTracer(object):
             if py_db.is_files_filter_enabled:
                 if py_db.apply_files_filter(frame, filename, False):
                     cache_skips[frame_cache_key] = 1
+
+                    if is_stepping and additional_info.pydev_original_step_cmd in (CMD_STEP_INTO, CMD_STEP_INTO_MY_CODE) and not _global_notify_skipped_step_in:
+                        notify_skipped_step_in_because_of_filters(py_db, frame)
+
                     # A little gotcha, sometimes when we're stepping in we have to stop in a
                     # return event showing the back frame as the current frame, so, we need
                     # to check not only the current frame but the back frame too.
@@ -437,8 +458,10 @@ class ThreadTracer(object):
                         if py_db.apply_files_filter(back_frame, back_frame.f_code.co_filename, False):
                             back_frame_cache_key = (back_frame.f_code.co_firstlineno, back_frame.f_code.co_name, back_frame.f_code.co_filename)
                             cache_skips[back_frame_cache_key] = 1
+                            # if DEBUG: print('skipped: trace_dispatch (filtered out: 1)', frame_cache_key, frame.f_lineno, event, frame.f_code.co_name)
                             return None if event == 'call' else NO_FTRACE
                     else:
+                        # if DEBUG: print('skipped: trace_dispatch (filtered out: 2)', frame_cache_key, frame.f_lineno, event, frame.f_code.co_name)
                         return None if event == 'call' else NO_FTRACE
 
             # if DEBUG: print('trace_dispatch', filename, frame.f_lineno, event, frame.f_code.co_name, file_type)
@@ -469,13 +492,13 @@ class ThreadTracer(object):
             return None if event == 'call' else NO_FTRACE
 
         except Exception:
-            if py_db._finish_debugging_session:
+            if py_db.pydb_disposed:
                 return None if event == 'call' else NO_FTRACE  # Don't log errors when we're shutting down.
             # Log it
             try:
-                if traceback is not None:
+                if pydev_log_exception is not None:
                     # This can actually happen during the interpreter shutdown in Python 2.7
-                    traceback.print_exc()
+                    pydev_log_exception()
             except:
                 # Error logging? We're really in the interpreter shutdown...
                 # (https://github.com/fabioz/PyDev.Debugger/issues/8)
@@ -483,7 +506,7 @@ class ThreadTracer(object):
             return None if event == 'call' else NO_FTRACE
 
 
-if IS_IRONPYTHON:
+if USE_CUSTOM_SYS_CURRENT_FRAMES_MAP:
     # This is far from ideal, as we'll leak frames (we'll always have the last created frame, not really
     # the last topmost frame saved -- this should be Ok for our usage, but it may leak frames and things
     # may live longer... as IronPython is garbage-collected, things should live longer anyways, so, it

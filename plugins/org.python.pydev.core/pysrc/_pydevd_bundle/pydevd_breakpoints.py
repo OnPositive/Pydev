@@ -59,10 +59,10 @@ class LineBreakpoint(object):
 
     @property
     def has_condition(self):
-        return self.condition is not None or self.hit_condition is not None
+        return bool(self.condition) or bool(self.hit_condition)
 
     def handle_hit_condition(self, frame):
-        if self.hit_condition is None:
+        if not self.hit_condition:
             return False
         ret = False
         with self._hit_condition_lock:
@@ -110,12 +110,18 @@ def stop_on_unhandled_exception(py_db, thread, additional_info, arg):
     if exctype is KeyboardInterrupt:
         return
 
+    if exctype is SystemExit and py_db.ignore_system_exit_code(value):
+        return
+
+    if py_db.exclude_exception_by_filter(exception_breakpoint, tb, True):
+        return
+
     frames = []
     user_frame = None
 
     while tb:
         frame = tb.tb_frame
-        if exception_breakpoint.ignore_libraries and py_db.in_project_scope(frame.f_code.co_filename):
+        if exception_breakpoint.ignore_libraries and py_db.in_project_scope(frame):
             user_frame = tb.tb_frame
         frames.append(tb.tb_frame)
         tb = tb.tb_next

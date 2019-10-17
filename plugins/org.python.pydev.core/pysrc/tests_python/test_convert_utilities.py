@@ -1,6 +1,9 @@
 # coding: utf-8
 import os.path
-from _pydevd_bundle.pydevd_constants import IS_WINDOWS, IS_JYTHON
+from _pydevd_bundle.pydevd_constants import IS_WINDOWS, IS_PY2
+from _pydev_bundle._pydev_filesystem_encoding import getfilesystemencoding
+import io
+from _pydev_bundle.pydev_log import log_context
 
 
 def test_convert_utilities(tmpdir):
@@ -24,19 +27,43 @@ def test_convert_utilities(tmpdir):
             assert stream.read() == 'test'
 
         assert '~' not in normalized
-        if not IS_JYTHON:
-            assert '~' in pydevd_file_utils.convert_to_short_pathname(normalized)
 
-        real_case = pydevd_file_utils.get_path_with_real_case(normalized)
-        assert isinstance(real_case, str)  # bytes on py2, unicode on py3
-        # Note test_dir itself cannot be compared with because pytest may
-        # have passed the case normalized.
-        assert real_case.endswith("Test_Convert_Utilities")
+        for i in range(3):  # Check if cache is ok.
+
+            if i == 2:
+                pydevd_file_utils._listdir_cache.clear()
+
+            assert pydevd_file_utils.get_path_with_real_case('<does not EXIST>') == '<does not EXIST>'
+            real_case = pydevd_file_utils.get_path_with_real_case(normalized)
+            assert isinstance(real_case, str)  # bytes on py2, unicode on py3
+            # Note test_dir itself cannot be compared with because pytest may
+            # have passed the case normalized.
+            assert real_case.endswith("Test_Convert_Utilities")
+
+            if i == 2:
+                # Check that we have the expected paths in the cache.
+                assert pydevd_file_utils._listdir_cache[os.path.dirname(normalized).lower()] == ['Test_Convert_Utilities']
+                assert pydevd_file_utils._listdir_cache[(os.path.dirname(normalized).lower(), 'Test_Convert_Utilities'.lower())] == real_case
+
+            if IS_PY2:
+                # Test with unicode in python 2 too.
+                real_case = pydevd_file_utils.get_path_with_real_case(normalized.decode(
+                    getfilesystemencoding()))
+                assert isinstance(real_case, str)  # bytes on py2, unicode on py3
+                # Note test_dir itself cannot be compared with because pytest may
+                # have passed the case normalized.
+                assert real_case.endswith("Test_Convert_Utilities")
+
+        # Check that it works with a shortened path.
+        shortened = pydevd_file_utils.convert_to_short_pathname(normalized)
+        assert '~' in shortened
+        with_real_case = pydevd_file_utils.get_path_with_real_case(shortened)
+        assert with_real_case.endswith('Test_Convert_Utilities')
+        assert '~' not in with_real_case
 
     else:
         # On other platforms, nothing should change
         assert pydevd_file_utils.normcase(test_dir) == test_dir
-        assert pydevd_file_utils.convert_to_short_pathname(test_dir) == test_dir
         assert pydevd_file_utils.get_path_with_real_case(test_dir) == test_dir
 
 
@@ -82,6 +109,13 @@ def test_to_server_and_to_client(tmpdir):
         import pydevd_file_utils
         if IS_WINDOWS:
             # Check with made-up files
+
+            pydevd_file_utils.setup_client_server_paths([('c:\\foo', 'c:\\bar'), ('c:\\foo2', 'c:\\bar2')])
+
+            stream = io.StringIO()
+            with log_context(0, stream=stream):
+                pydevd_file_utils.norm_file_to_server('y:\\only_exists_in_client_not_in_server')
+            assert r'pydev debugger: unable to find translation for: "y:\only_exists_in_client_not_in_server" in ["c:\foo", "c:\foo2"] (please revise your path mappings).' in stream.getvalue()
 
             # Client and server are on windows.
             pydevd_file_utils.set_ide_os('WINDOWS')
@@ -186,6 +220,9 @@ def test_to_server_and_to_client(tmpdir):
 
                 pydevd_file_utils.setup_client_server_paths(PATHS_FROM_ECLIPSE_TO_PYTHON)
                 assert pydevd_file_utils.norm_file_to_server('c:\\foo\\my') == '/báéíóúr/my'
+                assert pydevd_file_utils.norm_file_to_server('C:\\foo\\my') == '/báéíóúr/my'
+                assert pydevd_file_utils.norm_file_to_server('C:\\foo\\MY') == '/báéíóúr/MY'
+                assert pydevd_file_utils.norm_file_to_server('C:\\foo\\MY\\') == '/báéíóúr/MY'
                 assert pydevd_file_utils.norm_file_to_server('c:\\foo\\my\\file.py') == '/báéíóúr/my/file.py'
                 assert pydevd_file_utils.norm_file_to_server('c:\\foo\\my\\other\\file.py') == '/báéíóúr/my/other/file.py'
                 assert pydevd_file_utils.norm_file_to_server('c:/foo/my') == '/báéíóúr/my'
@@ -201,6 +238,12 @@ def test_to_server_and_to_client(tmpdir):
                 assert pydevd_file_utils.norm_file_to_client('/usr/bin/') == '\\usr\\bin'
                 assert pydevd_file_utils.norm_file_to_server('\\usr\\bin') == '/usr/bin'
                 assert pydevd_file_utils.norm_file_to_server('\\usr\\bin\\') == '/usr/bin'
+
+                # When we have a client file and there'd be no translation, and making it absolute would
+                # do something as '$cwd/$file_received' (i.e.: $cwd/c:/another in the case below),
+                # warn the user that it's not correct and the path that should be translated instead
+                # and don't make it absolute.
+                assert pydevd_file_utils.norm_file_to_server('c:\\another') == 'c:/another'
 
             # Client and server on unix
             pydevd_file_utils.set_ide_os('UNIX')
@@ -260,3 +303,47 @@ def test_zip_paths(tmpdir):
 
         assert zipfile_path in pydevd_file_utils._ZIP_SEARCH_CACHE, '%s not in %s' % (
             zipfile_path, '\n'.join(sorted(pydevd_file_utils._ZIP_SEARCH_CACHE.keys())))
+
+
+def test_source_mapping():
+
+    from _pydevd_bundle.pydevd_source_mapping import SourceMapping, SourceMappingEntry
+    source_mapping = SourceMapping()
+    mapping = [
+        SourceMappingEntry(line=3, end_line=6, runtime_line=5, runtime_source='<cell1>'),
+        SourceMappingEntry(line=10, end_line=11, runtime_line=1, runtime_source='<cell2>'),
+    ]
+    source_mapping.set_source_mapping('file1.py', mapping)
+
+    # Map to server
+    assert source_mapping.map_to_server('file1.py', 1) == ('file1.py', 1, False)
+    assert source_mapping.map_to_server('file1.py', 2) == ('file1.py', 2, False)
+
+    assert source_mapping.map_to_server('file1.py', 3) == ('<cell1>', 5, True)
+    assert source_mapping.map_to_server('file1.py', 4) == ('<cell1>', 6, True)
+    assert source_mapping.map_to_server('file1.py', 5) == ('<cell1>', 7, True)
+    assert source_mapping.map_to_server('file1.py', 6) == ('<cell1>', 8, True)
+
+    assert source_mapping.map_to_server('file1.py', 7) == ('file1.py', 7, False)
+
+    assert source_mapping.map_to_server('file1.py', 10) == ('<cell2>', 1, True)
+    assert source_mapping.map_to_server('file1.py', 11) == ('<cell2>', 2, True)
+
+    assert source_mapping.map_to_server('file1.py', 12) == ('file1.py', 12, False)
+
+    # Map to client
+    assert source_mapping.map_to_client('file1.py', 1) == ('file1.py', 1, False)
+    assert source_mapping.map_to_client('file1.py', 2) == ('file1.py', 2, False)
+
+    assert source_mapping.map_to_client('<cell1>', 5) == ('file1.py', 3, True)
+    assert source_mapping.map_to_client('<cell1>', 6) == ('file1.py', 4, True)
+    assert source_mapping.map_to_client('<cell1>', 7) == ('file1.py', 5, True)
+    assert source_mapping.map_to_client('<cell1>', 8) == ('file1.py', 6, True)
+
+    assert source_mapping.map_to_client('file1.py', 7) == ('file1.py', 7, False)
+
+    assert source_mapping.map_to_client('<cell2>', 1) == ('file1.py', 10, True)
+    assert source_mapping.map_to_client('<cell2>', 2) == ('file1.py', 11, True)
+
+    assert source_mapping.map_to_client('file1.py', 12) == ('file1.py', 12, False)
+
