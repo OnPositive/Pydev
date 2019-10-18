@@ -146,7 +146,6 @@ import org.python.pydev.parser.jython.ast.stmtType;
 import org.python.pydev.parser.visitors.NodeUtils;
 import org.python.pydev.plugin.PyDevUiPrefs;
 import org.python.pydev.plugin.nature.PythonNature;
-import org.python.pydev.plugin.preferences.CheckDefaultPreferencesDialog;
 import org.python.pydev.shared_core.SharedCorePlugin;
 import org.python.pydev.shared_core.callbacks.CallbackWithListeners;
 import org.python.pydev.shared_core.callbacks.ICallbackWithListeners;
@@ -360,10 +359,10 @@ public class PyEdit extends PyEditProjection implements IPyEdit, IGrammarVersion
             //Added to set the code folding.
             this.codeFoldingSetter = new CodeFoldingSetter(this);
 
-            CheckDefaultPreferencesDialog.askAboutSettings();
+            //CheckDefaultPreferencesDialog.askAboutSettings();
 
             //Ask for people to consider funding PyDev.
-            PydevShowBrowserMessage.show();
+            //PydevShowBrowserMessage.show();
 
             //Warn about the Eclipse version we require.
             checkEclipseRunning();

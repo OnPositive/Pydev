@@ -18,6 +18,7 @@ import org.eclipse.core.resources.IProjectNature;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IPath;
+import org.eclipse.core.runtime.IPluginDescriptor;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.content.IContentTypeMatcher;
 
@@ -188,6 +189,11 @@ public class AbstractIProjectStub extends AbstractIContainerStub implements IPro
     }
 
     public void clearCachedDynamicReferences() {
+    }
+
+    @Override
+    public IPath getPluginWorkingLocation(IPluginDescriptor plugin) {
+        return null;
     }
 
 }
